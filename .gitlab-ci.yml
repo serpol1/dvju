@@ -1,0 +1,279 @@
+image: maven:3-jdk-8
+
+stages:
+  - deptrack-exceptions
+  - deptrack
+  - test
+  - check
+  - build
+
+variables:
+  CHECKMARX_USERNAME: "cxadmin"
+  CHECKMARX_PASSWORD: "P@ssw0rd!"
+  CHECKMARX_BASE_URL: "https://cx95.rnd.swordfishsecurity.com/"
+  GITLAB_URL: "${CI_SERVER_URL}"
+  GITLAB_API_URL: "${CI_API_V4_URL}"
+  CHECKMARX_DOCKER_IMAGE: "cx-flow"
+  CX_FLOW_BUG_TRACKER: "GitLab"
+  CX_FLOW_BUG_TRACKER_IMPL: ${CX_FLOW_BUG_TRACKER}
+  CX_FLOW_EXE: "java -jar /app/cx-flow.jar"
+  CX_PROJECT: "$CI_PROJECT_NAME-$CI_COMMIT_REF_NAME"
+  CHECKMARX_VERSION: "9.0"
+  CHECKMARX_SETTINGS_OVERRIDE: "false"
+  CHECKMARX_EXCLUDE_FILES: ""
+  CHECKMARX_EXCLUDE_FOLDERS: ""
+  CHECKMARX_CONFIGURATION: "Default Configuration"
+  CHECKMARX_SCAN_PRESET: "Checkmarx Default"
+  CX_FLOW_FILTER_SEVERITY: "High"
+  CX_FLOW_FILTER_CATEGORY: ""
+  CX_FLOW_FILTER_CWE: ""
+  CX_FLOW_FILTER_STATUS: ""
+  CX_FLOW_FILTER_STATE: ""
+  CX_FLOW_ENABLED_VULNERABILITY_SCANNERS: sast
+  CX_FLOW_ZIP_EXCLUDE: ".jar"
+  CX_TEAM: "/CxServer"
+  CX_FLOW_BREAK_BUILD: "false"
+  SCA_FILTER_SEVERITY: ""
+  SCA_FILTER_SCORE: ""
+  SCA_THRESHOLDS_SCORE: ""
+  SCA_TEAM: ""
+  GITLAB_BLOCK_MERGE: "false"
+  GITLAB_ERROR_MERGE: "false"
+  GITLAB_TOKEN: "jMCvx3VyBNkN2N1kmhWS"
+  SECURITY_DASHBOARD_ON_MR: "false"
+  PARAMS: ""
+  DEFECTDOJO_ENGAGEMENT_PERIOD: 7
+  DEFECTDOJO_ENGAGEMENT_STATUS: "Not Started"
+  DEFECTDOJO_ENGAGEMENT_BUILD_SERVER: "null"
+  DEFECTDOJO_ENGAGEMENT_SOURCE_CODE_MANAGEMENT_SERVER: "null"
+  DEFECTDOJO_ENGAGEMENT_ORCHESTRATION_ENGINE: "null"
+  DEFECTDOJO_ENGAGEMENT_DEDUPLICATION_ON_ENGAGEMENT: "false"
+  DEFECTDOJO_ENGAGEMENT_THREAT_MODEL: "true"
+  DEFECTDOJO_ENGAGEMENT_API_TEST: "true"
+  DEFECTDOJO_ENGAGEMENT_PEN_TEST: "true"
+  DEFECTDOJO_ENGAGEMENT_CHECK_LIST: "true"
+  DEFECTDOJO_NOT_ON_MASTER: "false"
+  DEFECTDOJO_URL: "http://nxiq.demo.swordfishsecurity.com:8080/api/v2"
+  DEFECTDOJO_TOKEN: "65426c2dfeb126c1fe244fe90275ac3b79b58806"
+  DEFECTDOJO_PRODUCTID: "http://nxiq.demo.swordfishsecurity.com:8080/product/6"
+
+get-exceptions:
+  stage: deptrack-exceptions
+  tags:
+    - docker
+  script:
+    - echo $CI_PROJECT_NAMESPACE
+    - GIT_SSL_NO_VERIFY=true git clone https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/demo/deptrack/global-exception.git .devsecops
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - .devsecops/exceptions.txt
+
+sca:
+  stage: deptrack
+  tags:
+    - docker
+  image: docker.swordfishsecurity.com/appsec/cdxgen:0.2.7
+  variables:
+    security_gates: |
+      INFO: 0
+      LOW: 100
+      MEDIUM: 15
+      HIGH: 5
+      CRITICAL: 1
+  before_script:
+    - echo "${security_gates}" > ./qg.settings.yml
+    - export FETCH_LICENSE=true
+    - export SCAN_DEBUG_MODE=debug    
+  script:
+    - cdxgen -r -t java -o bom.xml
+    - python3 /opt/sca/cdxgen/bomtodtrack.py --bom bom.xml --name dvja --version 4.0.0 --report dtrack-report.json --gates qg.settings.yml --exception .devsecops/exceptions.txt --url ${SERVER_URL} --key ${API_KEY} --deduplicate --frontend_url http://dep-track2.rnd.swordfishsecurity.com:8080 --fail
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - bom.xml
+      - dtrack-report.json
+  allow_failure:
+    exit_codes: 1
+  needs:
+    - job: get-exceptions
+      artifacts: true
+
+# Include this file in your .gitlab-ci.yml file to automate & integrate Checkmarx security scans.
+# These variables can be overridden in your .gitlab-ci.yml file or as envionrment variables.
+# Please refer to https://checkmarx.com/gitlab for detailed instructions.
+checkmarx-scan-security-dashboard:
+  stage: test
+  tags: 
+    - docker
+  rules:
+    - if: '$CX_FLOW_BUG_TRACKER == "GitLabDashboard" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  image:
+    name: checkmarx/${CHECKMARX_DOCKER_IMAGE}
+    entrypoint: ['']
+  variables:
+    CHECKMARX_INCREMENTAL: "false"
+  script:
+    - ${CX_FLOW_EXE}
+          --scan 
+          --app="${CI_PROJECT_NAME}" 
+          --namespace="${CI_PROJECT_NAMESPACE}" 
+          --repo-name="${CI_PROJECT_NAME}" 
+          --repo-url="${CI_REPOSITORY_URL}" 
+          --cx-team="${CX_TEAM}" 
+          --cx-project="${CX_PROJECT}" 
+          --branch="${CI_COMMIT_BRANCH}"
+          --spring.profiles.active="${CX_FLOW_ENABLED_VULNERABILITY_SCANNERS}" 
+          --f=. 
+          ${PARAMS}
+  artifacts:
+     reports:
+       sast: gl-sast-report.json
+       dependency_scanning: gl-dependency-scanning-report.json
+
+checkmarx-scan:
+  stage: test
+  tags: 
+    - docker
+  rules:
+    - if: '$CX_FLOW_BUG_TRACKER != "GitLabDashboard" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  image:
+    name: checkmarx/${CHECKMARX_DOCKER_IMAGE}
+    entrypoint: ['']
+  variables:
+    CHECKMARX_INCREMENTAL: "false"
+  script:
+    - ${CX_FLOW_EXE}
+          --scan 
+          --app="${CI_PROJECT_NAME}" 
+          --namespace="${CI_PROJECT_NAMESPACE}" 
+          --repo-name="${CI_PROJECT_NAME}" 
+          --repo-url="${CI_REPOSITORY_URL}" 
+          --cx-team="${CX_TEAM}" 
+          --cx-project="${CX_PROJECT}" 
+          --branch="${CI_COMMIT_BRANCH}"
+          --spring.profiles.active="${CX_FLOW_ENABLED_VULNERABILITY_SCANNERS}" 
+          --f=. 
+          ${PARAMS}
+
+checkmarx-scan-mr:
+  stage: test
+  tags: 
+    - docker
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  image:   
+    name: checkmarx/${CHECKMARX_DOCKER_IMAGE}
+    entrypoint: ['']
+  variables:
+    CHECKMARX_INCREMENTAL: "true"
+  script:
+    - ${CX_FLOW_EXE}
+          --scan 
+          --bug-tracker="GITLABMERGE"
+          --app="${CI_PROJECT_NAME}" 
+          --namespace="${CI_PROJECT_NAMESPACE}"
+          --repo-name="${CI_PROJECT_NAME}"
+          --repo-url="${CI_REPOSITORY_URL}" 
+          --cx-team="${CX_TEAM}" 
+          --cx-project="${CX_PROJECT}" 
+          --branch="${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME}" 
+          --project-id="${CI_PROJECT_ID}" 
+          --merge-id="${CI_MERGE_REQUEST_IID}" 
+          --spring.profiles.active="${CX_FLOW_ENABLED_VULNERABILITY_SCANNERS}" 
+          --f=. 
+          ${PARAMS}
+
+checkmarx-scan-security-dashboard-on-mr:
+  stage: .post
+  tags: 
+    - docker
+
+  needs: ["checkmarx-scan-mr"]
+  rules:
+    - if: '$SECURITY_DASHBOARD_ON_MR == "true" && $CI_PIPELINE_SOURCE == "merge_request_event"'
+  image:   
+    name: checkmarx/${CHECKMARX_DOCKER_IMAGE}
+    entrypoint: ['']
+  variables:
+      CX_FLOW_BUG_TRACKER: ""
+      CX_FLOW_BUG_TRACKER_IMPL: ${CX_FLOW_BUG_TRACKER}
+  script:
+    - ${CX_FLOW_EXE}
+          --project
+          --app="${CI_PROJECT_NAME}"
+          --namespace="${CI_PROJECT_NAMESPACE}"
+          --repo-name="${CI_PROJECT_NAME}"
+          --repo-url="${CI_REPOSITORY_URL}"
+          --cx-team="${CX_TEAM}"
+          --cx-project="${CX_PROJECT}"
+          --branch="${CI_COMMIT_BRANCH}"
+          --spring.profiles.active="${CX_FLOW_ENABLED_VULNERABILITY_SCANNERS}"
+          --f=.
+          ${PARAMS}
+  artifacts:
+    reports:
+      sast: gl-sast-report.json
+      dependency_scanning: gl-dependency-scanning-report.json
+
+check:
+  stage: check
+  tags:
+    - docker
+  script: 
+    - echo "wow"
+  
+defectdojo_create_engagement:
+  stage: build
+  image: alpine
+  tags: 
+    - docker
+  variables:
+    GIT_STRATEGY: none
+  rules:
+    - if: '$DEFECTDOJO_NOT_ON_MASTER == "true" && $CI_COMMIT_BRANCH == "master"'
+      when: never
+    - when: always
+  before_script:
+    - apk add curl jq coreutils
+    - TODAY=`date +%Y-%m-%d`
+    - ENDDAY=$(date -d "+${DEFECTDOJO_ENGAGEMENT_PERIOD} days" +%Y-%m-%d)
+  script:
+    - echo '{"name":"'"${CI_PIPELINE_ID}"'", "description":"'"${CI_COMMIT_DESCRIPTION}"'", "version":"'"${CI_COMMIT_REF_NAME}"'", "first_contacted":"'"${TODAY}"'", "target_start":"'"${TODAY}"'", "target_end":"'"${ENDDAY}"'", "reason":"string",  "tracker":"'${CI_PROJECT_URL}'/-/issues", "threat_model":"'"${DEFECTDOJO_ENGAGEMENT_THREAT_MODEL}"'", "api_test":"'"${DEFECTDOJO_ENGAGEMENT_API_TEST}"'", "pen_test":"'"${DEFECTDOJO_ENGAGEMENT_PEN_TEST}"'", "check_list":"'"${DEFECTDOJO_ENGAGEMENT_CHECK_LIST}"'","status":"'"${DEFECTDOJO_ENGAGEMENT_STATUS}"'", "engagement_type":"CI/CD", "build_id":"'"${CI_PIPELINE_ID}"'", "commit_hash":"'"${CI_COMMIT_SHORT_SHA}"'", "branch_tag":"'"${CI_COMMIT_REF_NAME}"'", "deduplication_on_engagement":"'"${DEFECTDOJO_ENGAGEMENT_DEDUPLICATION_ON_ENGAGEMENT}"'", "product":"'"${DEFECTDOJO_PRODUCTID}"'", "source_code_management_uri":"'"${CI_PROJECT_URL}"'", "build_server":null, "source_code_management_server":null, "orchestration_engine":null}'
+    - curl -v --request POST "${DEFECTDOJO_URL}/engagements/" --header "Authorization:Token ${DEFECTDOJO_TOKEN}" --header 'Content-Type:application/json' --data-raw '{"name":"'"${CI_PIPELINE_ID}"'", "description":"'"${CI_COMMIT_DESCRIPTION}"'", "version":"'"${CI_COMMIT_REF_NAME}"'", "first_contacted":"'"${TODAY}"'", "target_start":"'"${TODAY}"'", "target_end":"'"${ENDDAY}"'", "reason":"string",  "tracker":"'${CI_PROJECT_URL}'/-/issues", "threat_model":"'"${DEFECTDOJO_ENGAGEMENT_THREAT_MODEL}"'", "api_test":"'"${DEFECTDOJO_ENGAGEMENT_API_TEST}"'", "pen_test":"'"${DEFECTDOJO_ENGAGEMENT_PEN_TEST}"'", "check_list":"'"${DEFECTDOJO_ENGAGEMENT_CHECK_LIST}"'","status":"'"${DEFECTDOJO_ENGAGEMENT_STATUS}"'", "engagement_type":"CI/CD", "build_id":"'"${CI_PIPELINE_ID}"'", "commit_hash":"'"${CI_COMMIT_SHORT_SHA}"'", "branch_tag":"'"${CI_COMMIT_REF_NAME}"'", "deduplication_on_engagement":"'"${DEFECTDOJO_ENGAGEMENT_DEDUPLICATION_ON_ENGAGEMENT}"'", "product":6, "source_code_management_uri":"'"${CI_PROJECT_URL}"'", "build_server":null, "source_code_management_server":null, "orchestration_engine":null}'
+    - |
+        ENGAGEMENTID=`curl --fail --request POST "${DEFECTDOJO_URL}/engagements/" \
+              --header "Authorization:Token ${DEFECTDOJO_TOKEN}" \
+              --header 'Content-Type:application/json' \
+                --data-raw "{ 
+                  \"tags\":[\"GITLAB-CI\"],
+                  \"name\":\"#${CI_PIPELINE_ID}\",
+                  \"description\":\"${CI_COMMIT_DESCRIPTION}\",
+                  \"version\":\"${CI_COMMIT_REF_NAME}\",
+                  \"first_contacted\":\"${TODAY}\",
+                  \"target_start\":\"${TODAY}\",
+                  \"target_end\":\"${ENDDAY}\",
+                  \"reason\":\"string\",
+                  \"tracker\":\"${CI_PROJECT_URL}/-/issues\",
+                  \"threat_model\":\"${DEFECTDOJO_ENGAGEMENT_THREAT_MODEL}\",
+                  \"api_test\":\"${DEFECTDOJO_ENGAGEMENT_API_TEST}\",
+                  \"pen_test\":\"${DEFECTDOJO_ENGAGEMENT_PEN_TEST}\",
+                  \"check_list\":\"${DEFECTDOJO_ENGAGEMENT_CHECK_LIST}\",
+                  \"status\":\"${DEFECTDOJO_ENGAGEMENT_STATUS}\",
+                  \"engagement_type\":\"CI/CD\",
+                  \"build_id\":\"${CI_PIPELINE_ID}\",
+                  \"commit_hash\":\"${CI_COMMIT_SHORT_SHA}\",
+                  \"branch_tag\":\"${CI_COMMIT_REF_NAME}\",
+                  \"deduplication_on_engagement\":\"${DEFECTDOJO_ENGAGEMENT_DEDUPLICATION_ON_ENGAGEMENT}\",
+                  \"product\":\"${DEFECTDOJO_PRODUCTID}\",
+                  \"source_code_management_uri\":\"${CI_PROJECT_URL}\",
+                  \"build_server\":${DEFECTDOJO_ENGAGEMENT_BUILD_SERVER},
+                  \"source_code_management_server\":${DEFECTDOJO_ENGAGEMENT_SOURCE_CODE_MANAGEMENT_SERVER},
+                  \"orchestration_engine\":${DEFECTDOJO_ENGAGEMENT_ORCHESTRATION_ENGINE}
+                }" | jq -r '.id'`
+    - echo ${ENGAGEMENTID}
+    - echo "DEFECTDOJO_ENGAGEMENTID=${ENGAGEMENTID}" >> defectdojo.env
+    - curl --fail --location --request POST "${DEFECTDOJO_URL}/import-scan/" --header "Authorization:Token ${DEFECTDOJO_TOKEN}" --form "scan_date=\"${TODAY}\"" --form "minimum_severity=\"${DEFECTDOJO_SCAN_MINIMUM_SEVERITY}\"" --form "active=\"${DEFECTDOJO_SCAN_ACTIVE}\""         --form "verified=\"${DEFECTDOJO_SCAN_VERIFIED}\"" --form "scan_type=\"${DEFECTDOJO_SCAN_TYPE}\"" --form "engagement=\"${DEFECTDOJO_ENGAGEMENTID}\"" --form "file=@${DEFECTDOJO_SCAN_FILE}" --form "close_old_findings=\"${DEFECTDOJO_SCAN_CLOSE_OLD_FINDINGS}\"" --form "push_to_jira=\"${DEFECTDOJO_SCAN_PUSH_TO_JIRA}\"" --form "test_type=\"${DEFECTDOJO_SCAN_TEST_TYPE}\"" --form "environment=\"${DEFECTDOJO_SCAN_ENVIRONMENT}\""
+  artifacts:
+    reports:
+      dotenv: defectdojo.env
